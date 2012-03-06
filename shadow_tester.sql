@@ -1,3 +1,5 @@
+-- Run through psql..
+\set ON_ERROR_STOP
 create table public.foobar2 (
     id text not null,
     somecol decimal(10, 5) not null,
@@ -20,7 +22,7 @@ update public.foobar2 set mycol = null where id = '1' and somecol = '1';
 select * from shadow_public.__shadow_foobar2;
 set local test_session_var.view_time to '2011-01-01';
 select * from shadow_public.foobar2;
-set local test_session_var.view_time to '2012-04-01';
+set local test_session_var.view_time to '2100-04-01';
 select * from shadow_public.foobar2;
 delete from public.foobar2 where id = '1' and somecol = '1';
 select * from shadow_public.__shadow_foobar2;
@@ -42,6 +44,13 @@ insert into public.foobar values(1, '1');
 insert into public.foobar2 values('3', '1', null, 'foof');
 select * from shadow_public.__shadow_foobar;
 select * from shadow_public.__shadow_foobar2;
-
+begin;
+-- a quick test for delete + insert
+delete from public.foobar where id = 1;
+insert into public.foobar values(1, '2');
+commit;
+begin;
+select * from shadow_public.__shadow_foobar;
+commit;
 drop table if exists public.foobar cascade;
 drop table if exists public.foobar2 cascade;
