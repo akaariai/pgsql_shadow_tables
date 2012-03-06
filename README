@@ -1,0 +1,97 @@
+Experimental shadow-table management for PostgreSQL.
+
+First warnings: this project is very experimental at the moment. I haven't
+used this in production. I have not tested this enough. So, use at your own
+risk. It would not surprise me if this eats your production data.
+
+Might work on 8.4+.
+
+Usage:
+psql -d wanted_database
+create language plpgsql; -- if not already installed.
+\i shadow_upgrader.sql
+-- check that shadow_meta.skip_tables contains tables you do not want to track.
+-- check that shadow_meta.shadow_config variables are correct.
+-- repeat the following for every schema you want to track.
+select shadow_meta.update_shadow_schema('public');
+-- check what the shadow_public contains:
+-- assume you have table sometable
+select * from shadow_public.__shadow_sometable;
+-- It should contain a row for every existing row in the original table
+-- If you configured some session variable (in postgresql.conf,
+-- custom_variable_classes and in shadow_meta.shadow_config) you can do
+set test_session_variable.view_time = '2011-01-01'
+select * from shadow_public.sometable;
+-- You should see nothing.
+set test_session_variable.view_time = '2100-01-01'
+select * from shadow_public.sometable;
+-- And now you see every row's last version
+-- This is a pretty neat trick: you can use existing queries. Just do:
+set search_path = 'shadow_public, public';
+set test_session_variable.view_time = 'wanted view timestamp';
+-- And now you can "timetravel" your database as you wish. Using your
+-- existing queries.
+
+-- After you have altered some table, or added a new table:
+select shadow_meta.update_shadow_schema('public');
+-- The shadow table should be upgraded, the views and triggers too.
+
+
+How does it work?
+  - For each table there is a matching table in a shadow schema. The
+    shadow schema name is original schema with 'shadow_' appended. The
+    table name is '__shadow_' + the original table name.
+  - The shadow table definition does not contain any of the original
+    constraints.
+  - The shadow table column names and datatypes should be the same as
+    in original table. In addition there are four columns: __insert_ts,
+    __insert_tx, __del_ts, __del_tx. These contain the inserting
+    transaction id and its beginning time, and the same for deletes.
+  - When you insert a row into the original table, the shadow table gets
+    inserted_cols, __insert_ts = now(), __insert_tx = txid_current().
+  - When you update a row in the original table, the shadow table gets
+    new_col_vals, __insert_ts = now(), __insert_tx = txid_current().
+    the old row (with __del_ts is null) will get __del_tx = now(),
+    __del_tx = txid_current().
+  - Why do I use txid_current(), now()? These identify a transaction uniquely,
+    and are always available.
+  - So, if you want to track who did the updates and deltes, make a log
+    table containing username, txid, ts. For every modifying transaction
+    insert there the username + txid_current() and now(). NOTE: This MUST be
+    done in the same transaction than you do the actual data changes, otherwise
+    the txid, now() do not match.
+  - There is no support for foreign keys to a log table. That would be useful,
+    might be added later on.
+  - The shadow view works on this trick:
+    create view shadow_schema.sometable as
+       select * from shadow_schema.__shadow_sometable
+         where __insert_ts <= current_setting('test_session_variable.view_time')::timestamptz
+               and (__del_ts is null or
+                    __del_ts > current_setting('test_session_variable.view_time')::timestamptz);
+  - The shadow schema handling is done through plpgsql
+
+Known limitations:
+  - As said above sometimes eats your data.
+  - The tracking is based on primary key. This has two consequences:
+    1. Tables not having primary keys can not be tracked.
+    2. Updatable primary keys work, but the chain of history is broken in the shadow
+       table. That is, you have:
+         oldpk, yesterday, today
+         newpk, today, -
+       when you try to check the history and you only know newpk, you are kind of lost.
+       This could be fixed by assigning a "shadow_primary_key" to each table. This does not
+       change when the primary key changes. However, the view would still be broken.
+
+       In short: if you need to track some object, you want to either know its primary key
+       history, or better yet, have immutable primary key.
+  - Eats a lot of space: the shadow table will be _at minimum_ 2x the size of
+    the original table. If you do a lot of updates, it will soon be really large. This is
+    because tracking is based on saving the full row for each modification, not just the
+    modified data.
+  - Query plans from the shadow views can be pretty bad. The shadow tables do
+    not have indexes.
+
+I have used a similar system for some production systems. In my opinion this works really
+nicely for small databases which do not have a lot of modifications. If you have a large
+database, or your database is write-heavy, you probably do not want to use this kind of
+modification logging, at least not for all tables.
