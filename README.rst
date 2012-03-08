@@ -152,13 +152,13 @@ The shadow schema should be upgraded, as well as the views and triggers.
 Known limitations:
   - As said above sometimes eats your data.
   - The tracking is based on primary key. This has two consequences:
-    1. Tables not having primary keys can not be tracked.
-    2. Updatable primary keys work, but the chain of history is broken in the
-       shadow table. That is, you have:
-         oldpk, yesterday, today
-         newpk, today, -
-       when you try to check the history and you only know newpk, you are kind
-       of lost.
+      1. Tables not having primary keys can not be tracked.
+      2. Updatable primary keys work, but the chain of history is broken in the
+         shadow table. That is, you have:
+           oldpk, yesterday, today
+           newpk, today, -
+         when you try to check the history and you only know newpk, you are kind
+         of lost.
        
        In short: if you need to track some object, you want to either know its
        primary key history, or better yet, have immutable primary key.
