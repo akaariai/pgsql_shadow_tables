@@ -111,20 +111,22 @@ that there is always knowledge of the user doing the modifications. (This can
 also be somewhat annoying, as you can't modify the logged tables outside an
 explicit transaction).
 
-NOTE: You really, really want to use the database now(). And the above must
-be ran IN THE SAME TRANSACTION as the modifications. Otherwise the linking
-between the user and the modifications will be lost.
+NOTE: You really, really want to use the database now() in the mod_log table,
+not now() from Python/Java code. The logging must be ran IN THE SAME
+TRANSACTION as the modifications. Otherwise the linking between the user and 
+he modifications will be lost.
 
-Now for a neat trick. This requires you to have test_session_variable in your
+Now for a little trick. This requires you to have test_session_variable in your
 postgresql.conf custom_variable_classes. So, in practice you need
-admin-privileges to the DB server to test this out. Now for the trick::
+admin-privileges to the DB server to test this out. Do this::
 
    set search_path = 'shadow_public, public';
    set test_session_variable.view_time = 'wanted view timestamp';
    -- for example '2012-05-06 22:08:00'
 
-And now you can "timetravel" your database as you wish. Using your existing
-queries. The shadow view works on this trick::
+And now you can "timetravel" your database as you wish using your existing
+queries (assuming you are not using schema qualified names in your existing
+queries). The shadow view works on this trick::
 
     create view shadow_schema.sometable as
        select * from shadow_schema.__shadow_sometable
@@ -133,7 +135,7 @@ queries. The shadow view works on this trick::
                     __del_ts > current_setting('test_session_variable.view_time')::timestamptz);
 
 The whole idea is that the view looks like the real table for select queries,
-it shows the row which was active at the selected view time. As you have the
+it shows a "snapshot" of the table at the selected view time. As you have the
 shadow schema name before the real schema name in the search_path, the view is
 spotted before the real table by PostgreSQL.
 
@@ -141,14 +143,11 @@ Using the above trick you get a snapshot of the _whole_ database. The last
 part can be a problem, too. If you need finer granularity, you will need to
 write the queries by hand.
 
-The good thing about the trick is that you can pretty easily use your existing
-queries and code to show historical data: before altering the table
-
-After you have altered some table, or added a new table::
+After you have altered some tables, or added new tables::
 
    select shadow_meta.update_shadow_schema('public');
 
-The shadow table should be upgraded, as well as the views and triggers.
+The shadow schema should be upgraded, as well as the views and triggers.
 
 Known limitations:
   - As said above sometimes eats your data.
