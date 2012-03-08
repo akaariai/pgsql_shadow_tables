@@ -156,6 +156,7 @@ Known limitations
 -----------------
 
   - The tracking is based on primary key. This has two consequences.
+
       1. Tables not having primary keys can not be tracked.
       2. Updatable primary keys work, but the chain of history is broken in the
          shadow table. That is, if you upgrade oldpk to newpk you will have
