@@ -3,10 +3,7 @@ Experimental shadow-table management for PostgreSQL.
 
 First warnings: this project is very experimental at the moment. I haven't
 used this in production. I have not tested this enough. So, use at your own
-risk. It would not surprise me if this eats your production data.
-
-Might work on 8.4+. I strongly recommend not even trying this on a production
-database. Use at your own risk.
+risk. Might work on 8.4+.
 
 Usage::
 
@@ -179,13 +176,29 @@ Known limitations
     for each modification, not just the modified data.
   - Query plans from the shadow views can be pretty bad. The shadow tables do
     not have indexes.
+  - Concurrent edits to the same row might cause errors which would not happen
+    without shadow tables.
   - You can't say what was visible at given moment or to given transaction in
     the database. A concurrent transaction might have been visible or not,
     depending on interleaving of the transactions. As said, that information
     isn't available. This is mostly a non-issue, but if you need this
     information, you won't get it 100% guaranteed by using this project.
-  - Concurrent edits to the same row might cause errors which would not happen
-    without shadow tables.
+  - There can be anomalies not visible to any transaction in the real data:
+    given table A(id pk) and B(id pk, a_id references A(pk)) plus the following
+    transactions::
+        
+      T1: begin; select now();
+      T2: begin; insert into A values(1); commit;
+      T1: insert into B values(1, 1);
+      T1: commit;
+
+    Now in the B's shadow table there will be a row a_id:1, add_ts:T1_now and
+    in A there is a row id:1, add_ts:T2_now. It is possible that T1_now is less
+    than T2_now. So, from T1_now to T2_now there is a foreign key constraint
+    violation. How is this possible? The reason is we use transaction start
+    times, not commit times in the timestamps, and this is what causes the
+    anomaly. Of course, it is impossible to do the tracking using transaction
+    commit times, as that time can not be available inside a transaction.
     
 I have used a similar system for some production systems. In my opinion this
 works really nicely for small databases which do not have a lot of
