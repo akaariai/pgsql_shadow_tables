@@ -1,22 +1,34 @@
 begin;
--- NOTE: the shadow_schema_name MUST be __shadow prefixed to above schema name.
+
+/* shadow_meta is a schema where the configuration tables
+ * and plpgsql functions are stored
+ */
 drop schema if exists shadow_meta cascade;
 create schema shadow_meta;
+
 create table shadow_meta.shadow_config(
     varname varchar(20) not null check (
         varname in ('session_variable')),
     val varchar(100) not null,
     primary key (varname, val)
 );
+/* I think later on this might be better to be shadow_meta.table_config
+ * so that you could have more options than just "skip"
+ */
 create table shadow_meta.skip_tables(
     tablename varchar(64) not null,
     schemaname varchar(64) not null,
     primary key(tablename, schemaname)
 );
+
+/* There is one variable at the moment, which tells what is the session
+ * variable to use in shadow views.
+ */
 insert into shadow_meta.shadow_config(varname, val) 
      values ('session_variable', 'test_session_var');
-/* These would be much nicer to write in PL/Python, but I don't
- * want to add dependencies...
+
+/* These functions would be much nicer to write in PL/Python, but I
+ * don't want to add dependencies...
  */
 create function shadow_meta.create_shadow_table(_schema text, tablename text) returns void as
 $$
@@ -27,23 +39,23 @@ $$
         table_oid record; -- What is the correct type? Use record.oid for now...
         shadow_schema_name text;
     begin
-	    shadow_schema_name = 'shadow_'||_schema;
-	    -- We start by fetching the columns and datatypes of the table.
-	    -- We do not care about the constraints and indexes, as they do not belong
-	    -- into the shadow table.
-	    --
-	    -- The table definition is:
-	    --     real columns,
-	    --     __insert_ts timestamp with time zone not null default now(),
-	    --     __insert_tx bigint not null default txid_current(),
-	    --     __del_ts timestamp with time zone,
-	    --     __del_tx bigint,
-	    --     primary key (real_pk + __insert_ts)
-	    -- Note that multiple edits done in a single transaction are collapsed into one.
-	    -- 
-	    -- We follow what psql does (psql -E, \d tablename).
-	    -- Fetch the table OID.
-	    SELECT c.oid
+        shadow_schema_name = 'shadow_'||_schema;
+        -- We start by fetching the columns and datatypes of the table.
+        -- We do not care about the constraints and indexes, as they do not belong
+        -- into the shadow table.
+        --
+        -- The table definition is:
+        --     real columns,
+        --     __insert_ts timestamp with time zone not null default now(),
+        --     __insert_tx bigint not null default txid_current(),
+        --     __del_ts timestamp with time zone,
+        --     __del_tx bigint,
+        --     primary key (real_pk + __insert_ts)
+        -- Multiple edits done in a single transaction are collapsed into one.
+        -- 
+        -- We follow what psql does (psql -E, \d tablename).
+        -- Start by fetching the table OID.
+    SELECT c.oid
           FROM pg_catalog.pg_class c
      LEFT JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
          WHERE c.relname = tablename
@@ -53,7 +65,7 @@ $$
             raise exception 'Got null OID for table, does %.% really exist?', _schema, tablename;
         end if;
         
-        -- Fetch the column names and datatypes from pg_catalog (using information_schema
+        -- Fetch the column names and datatypes from pg_catalog. Using information_schema
         -- would be nicer, but it seems hard to get a datatype usable directly in query strings
         -- from there.
         for colinfo in (SELECT a.attname, pg_catalog.format_type(a.atttypid, a.atttypmod) datatype
@@ -103,8 +115,8 @@ $$
         shadow_schema_name text;
         pk_col_clause text;
     begin
-	    /* Done in the best copy-paste style... */
-	    shadow_schema_name = 'shadow_'||_schema;
+        /* Done similarly to create_shadow_table. */
+        shadow_schema_name = 'shadow_'||_schema;
         -- Fetch the table OID.
         SELECT c.oid
           FROM pg_catalog.pg_class c
@@ -115,7 +127,8 @@ $$
             raise exception 'Got null OID for table, does %.% really exist?', _schema, tablename;
         end if;
         
-        -- Fetch the column names from pg_catalog (done for consistency to create_shadow_table.
+        -- Fetch the column names from pg_catalog (done for consistency to
+        -- create_shadow_table).
         SELECT array_to_string(array_agg(quote_ident(a.attname)), ', '),
                array_to_string(array_agg('new.'||quote_ident(a.attname)), ', '),
                array_to_string(array_agg(quote_ident(a.attname)|| ' = new.'||quote_ident(a.attname)), ', ')
@@ -180,7 +193,7 @@ $$
          execute 'drop trigger if exists '||quote_ident(tablename||'_on_mod_trg')||' ON '||quote_ident(_schema)||'.'||quote_ident(tablename);
          execute 'create trigger '||quote_ident(tablename||'_on_mod_trg')||' AFTER UPDATE OR DELETE ON '||quote_ident(_schema)||'.'||quote_ident(tablename)||
                  ' for each row execute procedure '||quote_ident(shadow_schema_name)||'.'||quote_ident('__trg_on_')||tablename||'_mod'||'();';        
-	end 
+    end 
 $$
 language plpgsql security definer volatile;
 
@@ -189,12 +202,12 @@ create or replace function shadow_meta.create_view(_schema text, tablename text)
       shadow_schema_name text;
       session_variable text;
   begin
-	  shadow_schema_name = 'shadow_'||_schema;
-	  select val from shadow_meta.shadow_config where varname = 'session_variable' into session_variable;
-	  EXECUTE 'drop view if exists '||quote_ident(shadow_schema_name)||'.'||quote_ident(tablename);
-	  EXECUTE 'create view '||quote_ident(shadow_schema_name)||'.'||quote_ident(tablename)||' AS'||
-	          ' SELECT * FROM '||quote_ident(shadow_schema_name)||'.'||quote_ident('__shadow_'||tablename)||
-	          '  WHERE __insert_ts <= current_setting('||quote_literal(session_variable||'.view_time')||')::timestamptz '||
+      shadow_schema_name = 'shadow_'||_schema;
+      select val from shadow_meta.shadow_config where varname = 'session_variable' into session_variable;
+      EXECUTE 'drop view if exists '||quote_ident(shadow_schema_name)||'.'||quote_ident(tablename);
+      EXECUTE 'create view '||quote_ident(shadow_schema_name)||'.'||quote_ident(tablename)||' AS'||
+              ' SELECT * FROM '||quote_ident(shadow_schema_name)||'.'||quote_ident('__shadow_'||tablename)||
+              '  WHERE __insert_ts <= current_setting('||quote_literal(session_variable||'.view_time')||')::timestamptz '||
               '    AND (__del_ts IS NULL OR __del_ts > current_setting('||quote_literal(session_variable||'.view_time')||')::timestamptz)';
   end 
 $$
@@ -231,7 +244,7 @@ create or replace function shadow_meta.modify_table(_schema text, tablename text
         shadow_schema_name text;
         modifications boolean = false;
     begin
-	    /* Once again we use best software development practices: copy-paste all the stuff. */
+        /* Once again we use best software development practices: copy-paste all the stuff. */
         shadow_schema_name = 'shadow_'||_schema;
         -- Fetch the table OID.
         SELECT c.oid
@@ -279,9 +292,9 @@ create function shadow_meta.ensure_base_version(_schema text, tname text) return
   declare
       shadow_schema_name text;
   begin
-	  shadow_schema_name = 'shadow_'||_schema;
-	  execute 'insert into '||quote_ident(shadow_schema_name)||'.'||
-	           quote_ident('__shadow_'||tname)||' select * from '||quote_ident(_schema)||'.'||quote_ident(tname); 
+      shadow_schema_name = 'shadow_'||_schema;
+      execute 'insert into '||quote_ident(shadow_schema_name)||'.'||
+               quote_ident('__shadow_'||tname)||' select * from '||quote_ident(_schema)||'.'||quote_ident(tname); 
   end
 $$
 language plpgsql security definer volatile;
@@ -291,25 +304,25 @@ create function shadow_meta.update_shadow_schema(_for_schema text) returns void 
         tname text;
         modifications boolean;
     begin
-	    perform shadow_meta.ensure_shadow_schema(_for_schema);
-	    for tname in (select table_name
-	                        from information_schema.tables
-	                       where table_schema = _for_schema and  table_type = 'BASE TABLE' and table_name not in
-	                             (select st.tablename from shadow_meta.skip_tables st where st.schemaname = _for_schema)) loop
-	        if exists (select 1 from information_schema.tables t
-	                    where t.table_schema = quote_ident('shadow_'||_for_schema)
-	                          and t.table_name = tname) then
-	            select shadow_meta.modify_table(_for_schema, tname) into modifications;
-	        else
-	            perform shadow_meta.create_shadow_table(_for_schema, tname);
-	            perform shadow_meta.ensure_base_version(_for_schema, tname);
-	            modifications = true;
-	        end if;
-	        if modifications then
-	           perform shadow_meta.create_triggers(_for_schema, tname);
+        perform shadow_meta.ensure_shadow_schema(_for_schema);
+        for tname in (select table_name
+                            from information_schema.tables
+                           where table_schema = _for_schema and  table_type = 'BASE TABLE' and table_name not in
+                                 (select st.tablename from shadow_meta.skip_tables st where st.schemaname = _for_schema)) loop
+            if exists (select 1 from information_schema.tables t
+                        where t.table_schema = quote_ident('shadow_'||_for_schema)
+                              and t.table_name = tname) then
+                select shadow_meta.modify_table(_for_schema, tname) into modifications;
+            else
+                perform shadow_meta.create_shadow_table(_for_schema, tname);
+                perform shadow_meta.ensure_base_version(_for_schema, tname);
+                modifications = true;
+            end if;
+            if modifications then
+               perform shadow_meta.create_triggers(_for_schema, tname);
                perform shadow_meta.create_view(_for_schema, tname);
             end if;
-	    end loop;
+        end loop;
     end 
 $$
 language plpgsql security definer volatile;
