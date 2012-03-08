@@ -25,6 +25,7 @@ in three ways.
 
        insert into shadow_meta.skip_tables(tablename, schemaname)
          values('public', 'problematic_table');
+
      Doing this will result in that table missing audit-logging.
   2. Add a primary key for the table.
   3. Drop the table.
@@ -48,8 +49,10 @@ currently hard-coded, as is the `shadow_` prefix for the shadow schema name.
 The shadow table will have the same columns as the original table with no
 constraints. The reason for no constraints is that this makes updating the
 shadow table schema much easier. In addition it has four columns:
+
   - __insert_ts, __insert_tx: this pair identifies the inserting transaction
   - __del_ts, __del_tx: this pair identifies the removing transaction
+
 Now, look at the table contents::
 
   select * from shadow_public.__shadow_sometable;
@@ -149,20 +152,27 @@ After you have altered some tables, or added new tables::
 
 The shadow schema should be upgraded, as well as the views and triggers.
 
-Known limitations:
-  - As said above sometimes eats your data.
-  - The tracking is based on primary key. This has two consequences:
+Known limitations
+-----------------
+
+  - The tracking is based on primary key. This has two consequences.
       1. Tables not having primary keys can not be tracked.
       2. Updatable primary keys work, but the chain of history is broken in the
-         shadow table. That is, you have:
-           oldpk, yesterday, today
-           newpk, today, -
-         when you try to check the history and you only know newpk, you are kind
-         of lost.
+         shadow table. That is, if you upgrade oldpk to newpk you will have
+
+         =====  ========= =====
+         PK     From      To
+         =====  ========= =====
+         oldpk  yesterday today
+         newpk  today     
+         =====  ========= =====
+
+         when you try to check the history and you only know newpk, it is
+         impossible to know that the oldpk is the "old" version of the row.
        
-       In short: if you need to track some object, you want to either know its
-       primary key history, or better yet, have immutable primary key.
-  - Eats a lot of space: the shadow table will be _at minimum_ 2x the size of
+         In short: if you need to track some object, you want to either know its
+         primary key history, or better yet, have immutable primary key.
+  - Eats a lot of space: the shadow table will be at minimum 2x the size of
     the original table. If you do a lot of updates, it will soon be really
     large. This is because tracking is based on saving the full row versions
     for each modification, not just the modified data.
