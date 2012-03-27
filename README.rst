@@ -1,9 +1,8 @@
 Experimental shadow-table management for PostgreSQL.
 ----------------------------------------------------
 
-First warnings: this project is very experimental at the moment. I haven't
-used this in production. I have not tested this enough. So, use at your own
-risk. Might work on 8.4+.
+First warnings: this project is experimental at the moment. I have not
+tested this enough. So, use at your own risk. Should work on 8.4+.
 
 Usage::
 
@@ -20,7 +19,7 @@ in three ways.
 
   1. Add the table into shadow_meta.skip_tables::
 
-       insert into shadow_meta.skip_tables(tablename, schemaname)
+       insert into shadow_meta.skip_tables(schemaname, tablename)
          values('public', 'problematic_table');
 
      Doing this will result in that table missing audit-logging.
@@ -114,19 +113,19 @@ explicit transaction).
 NOTE: You really, really want to use the database now() in the mod_log table,
 not now() from Python/Java code. The logging must be ran IN THE SAME
 TRANSACTION as the modifications. Otherwise the linking between the user and 
-he modifications will be lost.
+the modifications will be lost.
 
 Now for a little trick. This requires you to have test_session_variable in your
-postgresql.conf custom_variable_classes. So, in practice you need
-admin-privileges to the DB server to test this out. Do this::
+postgresql.conf custom_variable_classes. Add custom_variable_classes =
+'test_session_variable' to postgresql.conf, reload PostgreSQL and try this::
 
    set search_path = 'shadow_public, public';
    set test_session_variable.view_time = 'wanted view timestamp';
    -- for example '2012-05-06 22:08:00'
 
-And now you can "timetravel" your database as you wish using your existing
-queries (assuming you are not using schema qualified names in your existing
-queries). The shadow view works on this trick::
+By changing the view_time you can "timetravel" your database as you wish using
+your existing queries (assuming you are not using schema qualified names in your
+existing queries). The shadow view works on this trick::
 
     create view shadow_schema.sometable as
        select * from shadow_schema.__shadow_sometable
@@ -134,8 +133,8 @@ queries). The shadow view works on this trick::
                and (__del_ts is null or
                     __del_ts > current_setting('test_session_variable.view_time')::timestamptz);
 
-The whole idea is that the view looks like the real table for select queries,
-it shows a "snapshot" of the table at the selected view time. As you have the
+The whole idea is that the view looks like the real table for select queries.
+It shows a "snapshot" of the table at the selected view time. As you have the
 shadow schema name before the real schema name in the search_path, the view is
 spotted before the real table by PostgreSQL.
 
@@ -143,7 +142,8 @@ Using the above trick you get a snapshot of the _whole_ database. The last
 part can be a problem, too. If you need finer granularity, you will need to
 write the queries by hand.
 
-After you have altered some tables, or added new tables::
+Last: how to reflect DML? After you have altered some tables, or added new
+tables::
 
    select shadow_meta.update_shadow_schema('public');
 
@@ -174,8 +174,6 @@ Known limitations
     the original table. If you do a lot of updates, it will soon be really
     large. This is because tracking is based on saving the full row versions
     for each modification, not just the modified data.
-  - Query plans from the shadow views can be pretty bad. The shadow tables do
-    not have indexes.
   - Concurrent edits to the same row might cause errors which would not happen
     without shadow tables.
   - You can't say what was visible at given moment or to given transaction in
@@ -208,5 +206,3 @@ not for all tables.
 
 If you have ideas how to improve the implementation, or feature request, please
 drop me a message or create a issue.
-
-Last: this _really_ isn't tested. Use at your own risk!
