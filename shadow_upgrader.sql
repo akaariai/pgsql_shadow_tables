@@ -21,11 +21,15 @@ create table shadow_meta.skip_tables(
     primary key(tablename, schemaname)
 );
 
-/* There is one variable at the moment, which tells what is the session
- * variable to use in shadow views.
- */
-insert into shadow_meta.shadow_config(varname, val) 
-     values ('session_variable', 'test_session_var');
+create function shadow_meta.current_view_time() returns timestamptz as $$
+    declare
+        ret timestamptz;
+    begin
+	select dest from timetravel into ret;
+	return ret;
+    end
+$$
+language plpgsql stable;
 
 /* These functions would be much nicer to write in PL/Python, but I
  * don't want to add dependencies...
@@ -97,13 +101,11 @@ $$
             raise exception 'Problem figuring out primary key for table %.%', _schema, tablename;
         end if;
         col_definition = col_definition||'PRIMARY KEY('||pk_column||', __insert_ts)';
-        raise notice 'Creating shadow table %.%.', _schema, tablename;
-        
         execute 'CREATE TABLE '||quote_ident(shadow_schema_name)||'.'||quote_ident('__shadow_'||tablename)||'('||
                           col_definition||');';
     end
 $$
-language plpgsql security definer volatile;
+language plpgsql security definer volatile set client_min_messages = warning;
 
 create function shadow_meta.create_triggers(_schema text, tablename text) returns void as
 $$
@@ -195,23 +197,21 @@ $$
                  ' for each row execute procedure '||quote_ident(shadow_schema_name)||'.'||quote_ident('__trg_on_')||tablename||'_mod'||'();';        
     end 
 $$
-language plpgsql security definer volatile;
+language plpgsql security definer volatile set client_min_messages = warning;
 
 create or replace function shadow_meta.create_view(_schema text, tablename text) returns void as $$
   declare
       shadow_schema_name text;
-      session_variable text;
   begin
       shadow_schema_name = 'shadow_'||_schema;
-      select val from shadow_meta.shadow_config where varname = 'session_variable' into session_variable;
       EXECUTE 'drop view if exists '||quote_ident(shadow_schema_name)||'.'||quote_ident(tablename);
       EXECUTE 'create view '||quote_ident(shadow_schema_name)||'.'||quote_ident(tablename)||' AS'||
               ' SELECT * FROM '||quote_ident(shadow_schema_name)||'.'||quote_ident('__shadow_'||tablename)||
-              '  WHERE __insert_ts <= current_setting('||quote_literal(session_variable||'.view_time')||')::timestamptz '||
-              '    AND (__del_ts IS NULL OR __del_ts > current_setting('||quote_literal(session_variable||'.view_time')||')::timestamptz)';
+              '  WHERE __insert_ts <= (select shadow_meta.current_view_time()) ' ||
+              '    AND (__del_ts IS NULL OR __del_ts > (select shadow_meta.current_view_time()))';
   end 
 $$
-language plpgsql security definer volatile;
+language plpgsql security definer volatile set client_min_messages = warning;
 
 create or replace function shadow_meta.ensure_shadow_schema(_schema text, recreate boolean default false) returns void as $$
   declare
@@ -233,7 +233,7 @@ create or replace function shadow_meta.ensure_shadow_schema(_schema text, recrea
       end if;
   end 
 $$
-language plpgsql security definer volatile;
+language plpgsql security definer volatile set client_min_messages = warning;
 create or replace function shadow_meta.modify_table(_schema text, tablename text) returns boolean as $$
     declare
         colinfo record;
@@ -275,7 +275,6 @@ create or replace function shadow_meta.modify_table(_schema text, tablename text
                          WHERE a.attrelid = shadow_table_oid.oid 
                                AND a.attnum > 0 AND NOT a.attisdropped
                          ORDER BY a.attnum)) loop
-            raise notice 'found % %', colinfo.attname, colinfo.datatype;
             if colinfo is null or colinfo.attname is null or colinfo.datatype is null THEN
                 raise exception 'Problem figuring out column name or datatype for table %.%.', _schema, tablename;
             end if;
@@ -286,7 +285,7 @@ create or replace function shadow_meta.modify_table(_schema text, tablename text
         return modifications;
     end 
 $$
-language plpgsql security definer volatile;
+language plpgsql security definer volatile set client_min_messages = warning;
 
 create function shadow_meta.ensure_base_version(_schema text, tname text) returns void as $$
   declare
@@ -297,7 +296,7 @@ create function shadow_meta.ensure_base_version(_schema text, tname text) return
                quote_ident('__shadow_'||tname)||' select * from '||quote_ident(_schema)||'.'||quote_ident(tname); 
   end
 $$
-language plpgsql security definer volatile;
+language plpgsql security definer volatile set client_min_messages = warning;
 
 create function shadow_meta.update_shadow_schema(_for_schema text) returns void as $$
     declare
@@ -311,7 +310,7 @@ create function shadow_meta.update_shadow_schema(_for_schema text) returns void 
                                  (select st.tablename from shadow_meta.skip_tables st where st.schemaname = _for_schema)) loop
             if exists (select 1 from information_schema.tables t
                         where t.table_schema = quote_ident('shadow_'||_for_schema)
-                              and t.table_name = tname) then
+                              and t.table_name = '__shadow_' || tname) then
                 select shadow_meta.modify_table(_for_schema, tname) into modifications;
             else
                 perform shadow_meta.create_shadow_table(_for_schema, tname);
@@ -320,11 +319,24 @@ create function shadow_meta.update_shadow_schema(_for_schema text) returns void 
             end if;
             if modifications then
                perform shadow_meta.create_triggers(_for_schema, tname);
-               perform shadow_meta.create_view(_for_schema, tname);
             end if;
+            perform shadow_meta.create_view(_for_schema, tname);
         end loop;
     end 
 $$
-language plpgsql security definer volatile;
+language plpgsql security definer volatile set client_min_messages = warning;
 
+create function shadow_meta.timetravel(in_schema text, to_time timestamptz) returns void as $$
+    declare
+        updated integer;
+    begin
+	execute 'create temp table if not exists timetravel(id integer not null check(id = 1) unique, dest timestamptz)';
+	update timetravel set dest = to_time returning id into updated;
+	if updated is null then
+	    insert into timetravel values(1, to_time);
+        end if;
+	execute 'set search_path to shadow_' || in_schema || ', ' || in_schema;
+    end
+$$
+language plpgsql set client_min_messages to warning;
 commit;

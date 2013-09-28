@@ -26,16 +26,20 @@ in three ways.
   2. Add a primary key for the table.
   3. Drop the table.
 
+To view table data in different times, use::
+  
+  -- To timetravel to snapshow of given schema:
+  select shadow_meta.timetravel('public', '2013-01-01 17:00:00');
+  -- that is, give schema and time you want to view.
+  -- To view data of any table you are audit-logging, use:
+  select * from sometable;
+
 It is worth noting that generally you do _not_ want audit-log all the tables.
 For example, web-session tables are not worth audit-logging. Similarly, insert
 only tables should be skipped. In addition you might want to skip large tables,
 the audit-logging implementation will use as much space as the original table,
-even without any updates. If you have a lot of small updates to a large table,
-this audit-logging implementation is not likely for you.
-
-There is another configuration table worth noting: shadow_meta.shadow_config.
-It currently contains just one configuration parameter: the session variable
-name. We will get back to that soon.
+even without any updates. Also, if you have a lot of small updates to a large
+table, this audit-logging implementation is not likely for you.
 
 It is worth investigating what the shadow table contains, lets assume you have
 a table named sometable(id integer primary key, col text not null). That one
@@ -114,33 +118,6 @@ NOTE: You really, really want to use the database now() in the mod_log table,
 not now() from Python/Java code. The logging must be ran IN THE SAME
 TRANSACTION as the modifications. Otherwise the linking between the user and 
 the modifications will be lost.
-
-Now for a little trick. This requires you to have test_session_variable in your
-postgresql.conf custom_variable_classes. Add custom_variable_classes =
-'test_session_variable' to postgresql.conf, reload PostgreSQL and try this::
-
-   set search_path = 'shadow_public, public';
-   set test_session_variable.view_time = 'wanted view timestamp';
-   -- for example '2012-05-06 22:08:00'
-
-By changing the view_time you can "timetravel" your database as you wish using
-your existing queries (assuming you are not using schema qualified names in your
-existing queries). The shadow view works on this trick::
-
-    create view shadow_schema.sometable as
-       select * from shadow_schema.__shadow_sometable
-         where __insert_ts <= current_setting('test_session_variable.view_time')::timestamptz
-               and (__del_ts is null or
-                    __del_ts > current_setting('test_session_variable.view_time')::timestamptz);
-
-The whole idea is that the view looks like the real table for select queries.
-It shows a "snapshot" of the table at the selected view time. As you have the
-shadow schema name before the real schema name in the search_path, the view is
-spotted before the real table by PostgreSQL.
-
-Using the above trick you get a snapshot of the _whole_ database. The last
-part can be a problem, too. If you need finer granularity, you will need to
-write the queries by hand.
 
 Last: how to reflect DML? After you have altered some tables, or added new
 tables::
