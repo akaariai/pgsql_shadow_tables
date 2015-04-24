@@ -169,6 +169,9 @@ $$
                  E' DECLARE\n'||
                  E'  last_ts timestamptz;\n'||
                  E' BEGIN\n'||
+                 E'  IF TG_OP = \'UPDATE\' AND new IS NOT DISTINCT FROM old THEN\n'||
+                 E'      RETURN NEW;\n'||
+                 E'  END IF;\n'||
                  E'  SELECT __insert_ts FROM '||quote_ident(shadow_schema_name)||'.'||quote_ident('__shadow_'||tablename)||
                  E'   WHERE __del_ts IS NULL AND '||pk_col_clause||E' into last_ts;\n'||
                  E'  IF last_ts <> now() THEN\n'||
@@ -206,7 +209,7 @@ create or replace function shadow_meta.create_view(_schema text, tablename text)
       shadow_schema_name = 'shadow_'||_schema;
       EXECUTE 'drop view if exists '||quote_ident(shadow_schema_name)||'.'||quote_ident(tablename);
       EXECUTE 'create view '||quote_ident(shadow_schema_name)||'.'||quote_ident(tablename)||' AS'||
-              ' SELECT * FROM '||quote_ident(shadow_schema_name)||'.'||quote_ident('__shadow_'||tablename)||
+              ' SELECT * FROM (select * from '||quote_ident(shadow_schema_name)||'.'||quote_ident('__shadow_'||tablename)||') tmp' ||
               '  WHERE __insert_ts <= (select shadow_meta.current_view_time()) ' ||
               '    AND (__del_ts IS NULL OR __del_ts > (select shadow_meta.current_view_time()))';
   end 
@@ -335,7 +338,7 @@ create function shadow_meta.timetravel(in_schema text, to_time timestamptz) retu
 	if updated is null then
 	    insert into timetravel values(1, to_time);
         end if;
-	execute 'set search_path to shadow_' || in_schema || ', ' || in_schema;
+	execute 'set local search_path to shadow_' || in_schema || ', ' || in_schema;
     end
 $$
 language plpgsql set client_min_messages to warning;
