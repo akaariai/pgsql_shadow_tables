@@ -240,6 +240,7 @@ language plpgsql security definer volatile set client_min_messages = warning;
 create or replace function shadow_meta.modify_table(_schema text, tablename text) returns boolean as $$
     declare
         colinfo record;
+	shadow_colinfo record;
         col_definition text = ''; 
         pk_column text;
         table_oid record; -- What is the correct type? Use record.oid for now...
@@ -281,14 +282,28 @@ create or replace function shadow_meta.modify_table(_schema text, tablename text
             if colinfo is null or colinfo.attname is null or colinfo.datatype is null THEN
                 raise exception 'Problem figuring out column name or datatype for table %.%.', _schema, tablename;
             end if;
+	    -- Check if the type of the column has changed.
+            SELECT pg_catalog.format_type(a.atttypid, a.atttypmod) datatype
+	      FROM pg_catalog.pg_attribute a
+	     WHERE a.attrelid = shadow_table_oid.oid
+	           AND a.attnum > 0 AND NOT a.attisdropped
+	           AND a.attname = colinfo.attname
+	     INTO shadow_colinfo;
             modifications = true;
-            execute 'alter table '||quote_ident(shadow_schema_name)||'.'||quote_ident('__shadow_'||tablename)||
-                    ' ADD COLUMN '||quote_ident(colinfo.attname)||' '||colinfo.datatype;  
+	    IF shadow_colinfo is not null and shadow_colinfo.datatype != colinfo.datatype THEN
+		-- This works if the datatype can be auto-coerced. If not, the user must do the datatype
+                -- change manually.
+		execute 'alter table '||quote_ident(shadow_schema_name)||'.'||quote_ident('__shadow_'||tablename)||
+		        ' ALTER '||quote_ident(colinfo.attname)||' TYPE '||colinfo.datatype;
+	    else
+                execute 'alter table '||quote_ident(shadow_schema_name)||'.'||quote_ident('__shadow_'||tablename)||
+                        ' ADD COLUMN '||quote_ident(colinfo.attname)||' '||colinfo.datatype;  
+	    end if;
         end loop;
         return modifications;
     end 
 $$
-language plpgsql security definer volatile set client_min_messages = warning;
+language plpgsql security definer volatile;
 
 create function shadow_meta.ensure_base_version(_schema text, tname text) returns void as $$
   declare
